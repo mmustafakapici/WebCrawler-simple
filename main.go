@@ -28,6 +28,12 @@ var userAgents = []string{
 	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_13) AppleWebKit/604.1.38 (KHTML, like Gecko) Version/11.0 Safari/604.1.38",
 }
 
+type User struct {
+	ID       uint   `json:"id"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 type CrawledUrl struct {
 	Url       string    `json:"url"`
 	Content   string    `json:"content"`
@@ -36,6 +42,14 @@ type CrawledUrl struct {
 	FoundAt   time.Time `json:"foundAt"`
 	IsCrawled bool      `json:"isCrawled"`
 }
+
+type CrawlHistory struct {
+	Username    string       `json:"username"`
+	CrawledUrls []CrawledUrl `json:"crawledUrls"`
+}
+
+var users = make(map[string]User) // In-memory user store for simplicity
+var crawlHistories = make(map[string]CrawlHistory)
 
 // Random User Agent seçimi
 func randomUserAgent() string {
@@ -105,19 +119,19 @@ func resolveRelativeLinks(href string, baseUrl string) (bool, string) {
 var tokens = make(chan struct{}, 5) // Channel working as a semaphore - using 5 or more tokens likely to overload target site
 
 // Crawl Fonksiyonu
-func Crawl(targetURl string, baseURL string) []string {
-	color.Cyan("Crawl edilen link: %s", targetURl)
+func Crawl(username, targetURL string) []string {
+	color.Cyan("Crawl edilen link: %s", targetURL)
 	tokens <- struct{}{}
-	resp, _ := getRequest(targetURl)
+	resp, _ := getRequest(targetURL)
 	<-tokens
-	links := discoverLinks(resp, baseURL)
+	links := discoverLinks(resp, targetURL)
 	color.Green("Bulunan linkler:")
 	for _, link := range links {
 		color.Green(link)
 	}
 	foundUrls := []string{}
 	for _, link := range links {
-		ok, correctLink := resolveRelativeLinks(link, baseURL)
+		ok, correctLink := resolveRelativeLinks(link, targetURL)
 		if ok {
 			if correctLink != "" {
 				foundUrls = append(foundUrls, correctLink)
@@ -125,7 +139,8 @@ func Crawl(targetURl string, baseURL string) []string {
 			}
 		}
 	}
-	ParseHTML(resp, targetURl)
+	parsedHTML := ParseHTML(resp, targetURL)
+	saveToUserHistory(username, parsedHTML)
 	return foundUrls
 }
 
@@ -154,8 +169,18 @@ func saveToJson(crawledUrl CrawledUrl) {
 	}
 }
 
+// Kullanıcı tarama geçmişini kaydetme
+func saveToUserHistory(username string, crawledUrl CrawledUrl) {
+	history, exists := crawlHistories[username]
+	if !exists {
+		history = CrawlHistory{Username: username, CrawledUrls: []CrawledUrl{}}
+	}
+	history.CrawledUrls = append(history.CrawledUrls, crawledUrl)
+	crawlHistories[username] = history
+}
+
 // HTML içeriğini işleme ve kaydetme
-func ParseHTML(response *http.Response, targetUrl string) {
+func ParseHTML(response *http.Response, targetUrl string) CrawledUrl {
 	if response != nil {
 		bodyBytes, _ := ioutil.ReadAll(response.Body)
 		bodyString := string(bodyBytes)
@@ -170,7 +195,9 @@ func ParseHTML(response *http.Response, targetUrl string) {
 			IsCrawled: true,
 		}
 		saveToJson(crawledUrl)
+		return crawledUrl
 	}
+	return CrawledUrl{}
 }
 
 // URL'nin doğru formatta olup olmadığını kontrol etme
@@ -181,9 +208,43 @@ func validateUrl(inputUrl string) string {
 	return inputUrl
 }
 
+// Kullanıcı kayıt işlemi
+func registerHandler(w http.ResponseWriter, r *http.Request) {
+	var newUser User
+	err := json.NewDecoder(r.Body).Decode(&newUser)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if _, exists := users[newUser.Username]; exists {
+		http.Error(w, "Username already exists", http.StatusBadRequest)
+		return
+	}
+	users[newUser.Username] = newUser
+	w.WriteHeader(http.StatusCreated)
+}
+
+// Kullanıcı giriş işlemi
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var credentials User
+	err := json.NewDecoder(r.Body).Decode(&credentials)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	user, exists := users[credentials.Username]
+	if !exists || user.Password != credentials.Password {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// Tarama işlemi
 func crawlHandler(w http.ResponseWriter, r *http.Request) {
 	var requestBody struct {
-		URL string `json:"url"`
+		URL      string `json:"url"`
+		Username string `json:"username"`
 	}
 	err := json.NewDecoder(r.Body).Decode(&requestBody)
 	if err != nil {
@@ -191,8 +252,25 @@ func crawlHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	requestBody.URL = validateUrl(requestBody.URL)
-	foundLinks := Crawl(requestBody.URL, requestBody.URL)
+	foundLinks := Crawl(requestBody.Username, requestBody.URL)
 	response, err := json.Marshal(foundLinks)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(response)
+}
+
+// Kullanıcı tarama geçmişi
+func historyHandler(w http.ResponseWriter, r *http.Request) {
+	username := r.URL.Query().Get("username")
+	history, exists := crawlHistories[username]
+	if !exists {
+		http.Error(w, "No history found for user", http.StatusNotFound)
+		return
+	}
+	response, err := json.Marshal(history)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -203,7 +281,10 @@ func crawlHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	r := mux.NewRouter()
+	r.HandleFunc("/register", registerHandler).Methods("POST")
+	r.HandleFunc("/login", loginHandler).Methods("POST")
 	r.HandleFunc("/crawl", crawlHandler).Methods("POST")
+	r.HandleFunc("/history", historyHandler).Methods("GET")
 	r.PathPrefix("/").Handler(http.FileServer(http.Dir("./static/")))
 
 	fmt.Println("Server running at http://localhost:8080")
