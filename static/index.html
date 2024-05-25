@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Crawler</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+    <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+    <style>
+        body {
+            padding-top: 50px;
+        }
+        .result {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1 class="text-center">Web Crawler</h1>
+    <form id="crawlForm">
+        <div class="form-group">
+            <label for="url">Enter URL:</label>
+            <input type="text" class="form-control" id="url" placeholder="https://www.theguardian.com/">
+        </div>
+        <button type="submit" class="btn btn-primary">Crawl</button>
+    </form>
+    <div id="results" class="result">
+        <h3>Results</h3>
+        <pre id="jsonOutput"></pre>
+    </div>
+</div>
+<script>
+    document.getElementById('crawlForm').addEventListener('submit', function(event) {
+        event.preventDefault();
+        var url = document.getElementById('url').value;
+        fetch('/crawl', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ url: url }),
+        })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('jsonOutput').textContent = JSON.stringify(data, null, 2);
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+            });
+    });
+</script>
+</body>
+</html>
